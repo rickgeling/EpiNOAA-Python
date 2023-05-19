@@ -1,0 +1,200 @@
+# NClimGrid Importer
+
+## Executive Summary
+
+The analysis ready NClimGrid data made available through the CISESS ARC project and the NOAA Open Data Dissemination program allow for parallel performant access to NClimGrid data. Importing this data leveraging the features of the underlying storage format means that only the data requested is loaded into memory for analysis.   
+
+## Getting Started
+
+To get started, first check out the code available [here](https://gitlab.cicsnc.org/arc-project/nclimgrid-importer).
+
+This repository contains a to-be-published python package with hooks to the NODD AWS NClimGrid repository that facilates fast access to the data.  
+
+We will primarily be using the `load_nclimgrid_data` function located under the `nclimgrid_importer` directory in the repository.  
+
+This function will allow us to specify the time periods we want to examine, the spatial resolution we want our data, and the specific spatial areas that we want to analyze.
+
+First, set up your environment.  If you are working in this cloned repo, consult the Makefile for easy setup:
+
+```
+make install
+```
+
+If not, it is recommended to set up an isolated python environment with the dependencies listed in the `pyproject.toml` file.  
+
+> __Dependencies__ This project uses [Poetry](https://python-poetry.org/) as its environment and package manager. Please install it globally if you have not done so already.  The NClimGrid data are available most rapidly in parquet format.  To interface with this format, you may need to install some system libraries to access these data.  On most systems, running `poetry install` should take care of it.  
+
+
+## Vignette
+
+### Harris County, TX
+
+Let's get off to the races.  As a first example, let's say we want to compare historical minimum temperatures in Harris County TX with modern day occurrences.  
+
+First, let's load our libraries:
+```
+from nclimgrid_importer import load_nclimgrid_data
+import polars as pl
+import pandas as pd
+import seaborn as sbn
+```
+
+Next, let's import the historical data:
+
+```
+harris_old = load_nclimgrid_data(
+        start_date = '1951-01-01',
+        end_date = '2000-01-01',
+        spatial_scale = 'cty',
+        scaled = True,
+        states = ['TX'],
+        counties = ['Harris County'],
+        variables = ['TMIN']
+        )
+```
+
+> __Note:__ This loader is so effective because it scans the desired data in parallel and only reads in what it needs.  The above call takes about 110 seconds.  To do this previously, you would have had to download and read in 100+ individual CSV files.  In doing so, local implementations of this would probably have run out of memory.  The NClimGrid pipeline and hosting the data via NODD moves the above query from something that would be extremely onerous to a routine function call that takes less than two minutes.  
+
+Now that we have the historical data, let's load in the more recent data:
+```
+harris_new = load_nclimgrid_data(
+        start_date = '2011-01-01',
+        end_date = '2020-01-01',
+        spatial_scale = 'cty',
+        scaled = True,
+        states = ['TX'],
+        counties = ['Harris County'],
+        variables = ['TMIN']
+        )
+```
+This takes less time because there are less files to scan.  
+
+Now that we have our data, let's explore comparing them.
+
+To do so, we will use a performant library built on Rust that supports native parallelization and a parquet backend: [Polars](https://www.pola.rs/).  It is orders of magnitude faster than Pandas.
+
+We will need to combine the historical and recent data and do some filtering to look at just the summer months of interest.
+
+```
+# Combine Datasets
+harris_comparison = pl.concat(
+        [
+            pl.from_arrow(harris_old).with_columns([pl.lit('Historical (1951-200)').alias('Period')]),
+            pl.from_arrow(harris_new).with_columns([pl.lit('Recent (2011-2020)').alias('Period')])
+        ]
+        )
+
+# Filter for Summer Months
+harris_plot_data = (
+        harris_comparison.lazy()
+        .with_columns([
+                pl.col('date').str.slice(0,2).alias('month'),
+                pl.col('TMIN').cast(pl.Float64)
+            ])
+        .filter((pl.col('month').is_in(["07","08","09"])))
+        )
+```
+
+Finally, we'll plot the results and see what we have:
+
+```
+sbn.displot(
+        harris_plot_data.collect().to_pandas(), 
+        x="TMIN", hue="Period", kind="kde", fill=True)
+```
+
+> ![Harris County, TX](./figures/harris_county.png) Summer minimum temperatures in Harris County, TX.  
+
+### Comparing Counties
+
+The process above works equally well for accessing multiple spatial regions.  Let's compare daily temperature differences in Oklahoma and Northern Carolina counties of importance during the winter...
+
+Similary to the work above, we'll import our libraries and then our data:
+
+```
+from nclimgrid_importer import load_nclimgrid_data
+import polars as pl
+import pandas as pd
+import seaborn as sbn
+
+county_old = load_nclimgrid_data(
+        start_date = '1951-01-01',
+        end_date = '2000-01-01',
+        spatial_scale = 'cty',
+        scaled = True,
+        states = ['OK', 'NC'],
+        counties = ['Cleveland County', 'Buncombe County'],
+        variables = ['TMIN', 'TMAX']
+        )
+
+county_new = load_nclimgrid_data(
+        start_date = '2011-01-01',
+        end_date = '2020-01-01',
+        spatial_scale = 'cty',
+        scaled = True,
+        states = ['OK', 'NC'],
+        counties = ['Cleveland County', 'Buncombe County'],
+        variables = ['TMIN', 'TMAX']
+        )
+```
+
+Next, we will want to combine the datasets, then calculate the difference between the daily maximum and minimum temperature for just the core winter months.  
+
+```
+# Combine datasets
+county_comparison = pl.concat(
+        [
+            pl.from_arrow(county_old).with_columns([pl.lit('Historical (1951-200)').alias('Period')]),
+            pl.from_arrow(county_new).with_columns([pl.lit('Recent (2011-2020)').alias('Period')])
+        ]
+        )
+
+# Calculate difference and filter
+county_plot_data = (
+        county_comparison.lazy()
+        .with_columns([
+                pl.col('date').str.slice(0,2).alias('month'),
+                pl.col('TMIN').cast(pl.Float64),
+                pl.col('TMAX').cast(pl.Float64),
+            ])
+        .filter((pl.col('month').is_in(["11","12","01", "02"])))
+        .with_columns([
+            (pl.col('TMAX')-pl.col('TMIN')).alias('Diff')
+            ])
+       ).collect().to_pandas()
+```
+
+Let's take a look at what that shows:
+```
+sbn.displot(county_plot_data,
+        x="Diff", hue="Period", common_norm = False, kind="kde", col = 'county', fill=True)
+```
+
+> ![County Comparison](./figures/county_compare.png) Daily temperature differences during winter.  
+
+
+## How this Works
+
+These data were accessed, analyzed, and processed in less than two minutes because of the unique nature of the backend that facilates rapid frontend access.
+
+### Backend
+
+As part of the ARC project, NCICS researchers built an event-driven pipeline that automatically and in near-real-time converts raw NClimGrid data to an analysis ready format stored in parquet files on an AWS S3 bucket provided and managed by the NOAA Open Data Dissemination program.  These data are publicly accessible for anyone to read, access, and analyze.
+
+Because it is available on AWS S3, throughput is incredible high... All of the data can be accessed at once in a massive parallel fashion.  
+
+Because the data are available in a highly efficient parquet format, data sizes are kept low speeding up I/O.  The parquet format also allows for data scanning and filtering prior to loading which means only the data requested is loaded into memory.  
+
+The combined advantages of public cloud S3 access and the parquet file formats mean that performant access to comprehensive datasets is possible.  
+
+### Frontend
+
+Frontend access, whether programmatic through python, R, or other languages, or through the Data Downloader app builds upon the combined advantages of the backend.  
+
+Data are streamed directly from AWS S3 without the need to download and manage local files.  Moreover, because parquet supports scanning and filtering, only the data requested is actually loaded into memory.  This last point is critical.  In the above vignettes, we touch almost the entirety of the NClimGrid dataset.  If we loaded it all into memory before filtering, on most systems we would run into memory problems. The NClimGrid importer process leverages the capabilities of parquet to avoid this problem.  
+
+Performance is also achieved through parallelization.  The ipmport process relies upon parallel communication to S3 for scanning and accessing the data.  In addition, in our vignettes, we used Polars which runs on a natively parallel Rust backend to filter and further refine our data.  
+
+With performant frontend access to a highly scalable and performant backend, researchers can construct sophisticated NClimGrid queries and access their data in seconds rather than hours or days.  
+
+
