@@ -5,14 +5,15 @@ description = "Scripts to support Deke Arndt's Plotting of NClimGrid Data"
 authors = ["Denis <dwillett@cicsnc.org>"]
 
 [tool.poetry.dependencies]
-python = "^3.9"
-polars = "^0.13.22"
-s3fs = "^2022.3.0"
-commitizen = "^2.23.0"
-pyarrow = "^7.0.0"
-pendulum = "^2.1.2"
-pandas = "^1.4.2"
-mkdocs = "^1.3.0"
+python = "^3.9"  # This is okay
+polars = "^0.20.0"  # Updated to a recent version
+s3fs = "^2022.3.0" # This might also need an update if issues persist, but let's start here
+commitizen = "^2.23.0" # This is likely a dev tool, version might be less critical for core functionality
+pyarrow = "^16.0.0" # Updated to a recent version
+pendulum = "^3.0.0" # Crucial update for Python 3.12
+pandas = "^2.2.0"   # Updated to a recent version
+mkdocs = "^1.3.0"   # Dev tool, version might be less critical
+seaborn = "^0.13.2"
 
 [tool.poetry.dev-dependencies]
 

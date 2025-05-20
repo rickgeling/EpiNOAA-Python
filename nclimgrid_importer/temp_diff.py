@@ -47,4 +47,4 @@ county_plot_data = (
 cp = sbn.displot(county_plot_data,
         x="Diff", hue="Period", common_norm = False, kind="kde", col = 'county', fill=True)
 
-cp.savefig('./docs/docs/figures/county_compare.png')
+cp.savefig('./docs/docs/figures/county_compare_new.png')
