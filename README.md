@@ -22,3 +22,5 @@
  If not, it is recommended to set up an isolated python environment with the dependencies listed in the `pyproject.toml` file.
 
  > __Dependencies__ This project uses [Poetry](https://python-poetry.org/) as its environment and package manager. Please install it g  lobally if you have not done so already.  The NClimGrid data are available most rapidly in parquet format.  To interface with this fo  rmat, you may need to install some system libraries to access these data.  On most systems, running `poetry install` should take care   of it.
+
+https://noaa-nclimgrid-daily-pds.s3.amazonaws.com/index.html#EpiNOAA/v1-0-0/csv/cen/
