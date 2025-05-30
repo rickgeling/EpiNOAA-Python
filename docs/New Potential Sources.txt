@@ -1,0 +1,15 @@
+Growing Degree Days based on NOAA GHCN:
+-https://www.epa.gov/system/files/documents/2024-06/growing-degree-days_documentation.pdf
+- https://www.ncei.noaa.gov/cdo-web/search?datasetid=GHCND
+
+PRISM weather data extraction GITHUB:
+https://github.com/cbw1243/prismProcess?tab=readme-ov-file
+
+PRISM prepared weather data GITHUB:
+
+PRISM download pdf:
+https://prism.oregonstate.edu/documents/PRISM_downloads_FTP.pdf
+
+HadISD: global daily weather data:
+https://catalogue.ceda.ac.uk/uuid/2a01faf75de64308b2bf4c7b43d393ef/ (used in Contrasting impacts of dry versus humid heat on US corn and soybean yields)
+

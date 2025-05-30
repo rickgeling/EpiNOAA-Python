@@ -1,0 +1,485 @@
+# process_local_ag_weather_monthly.py
+
+# --- Standard Library Imports ---
+import os
+import time
+from typing import List, Dict, Optional, Any, Tuple
+from collections import defaultdict
+
+# --- Third-party Library Imports ---
+import polars as pl
+# from polars.exceptions import ColumnNotFoundError # Not explicitly used after modification
+import numpy as np # For NaN
+
+# --- Custom Module Imports ---
+# We are not using nclimgrid_importer for local files
+import sys
+# Add parent directory to Python path
+sys.path.append(os.path.abspath(".."))
+# Now import config
+import config
+
+# --- Global constants for monthly aggregation ---
+MONTH_ABBREVIATIONS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+
+
+# --- Chunk 1: Load and Prepare Input CSV (Mostly Unchanged) ---
+def load_and_prepare_yield_data(csv_path: str) -> Optional[Tuple[pl.DataFrame, List[str], int, int]]:
+    """
+    Loads the yield data CSV, prepares FIPS codes, and extracts unique FIPS and year range.
+    """
+    if not os.path.exists(csv_path):
+        print(f"Error: Input CSV file not found at '{csv_path}'")
+        return None
+    try:
+        yield_column_dtypes = {
+            "state": pl.String, "county": pl.String, "year": pl.Int64
+        }
+        df_yield = pl.read_csv(csv_path, schema_overrides=yield_column_dtypes, null_values=["NA", "N/A", "", " "])
+        print(f"\nSuccessfully loaded input CSV: '{csv_path}', Shape: {df_yield.shape}")
+        required_cols = ["state", "county", "year"]
+        for col_name_req in required_cols:
+            if col_name_req not in df_yield.columns:
+                print(f"Error: CSV must contain a '{col_name_req}' column.")
+                return None
+        df_yield = df_yield.drop_nulls(subset=["state", "county", "year"])
+        if df_yield.height == 0:
+            print("Error: No valid rows in CSV after dropping nulls in state, county, or year.")
+            return None
+        df_yield = df_yield.with_columns(
+            pl.col("county").str.zfill(3).alias("county_padded"),
+            (pl.col("state") + pl.col("county").str.zfill(3)).alias("fips_full")
+        )
+        unique_fips_to_process = df_yield.get_column("fips_full").unique().sort().to_list()
+        print(f"\nFound {len(unique_fips_to_process)} unique FIPS codes to process from yield data.")
+        if not unique_fips_to_process:
+            print("Error: No unique FIPS codes found.")
+            return None
+        min_year_csv = df_yield.select(pl.col("year").min()).item()
+        max_year_csv = df_yield.select(pl.col("year").max()).item()
+        print(f"Year range in CSV: {min_year_csv} - {max_year_csv}")
+        return df_yield, unique_fips_to_process, min_year_csv, max_year_csv
+    except Exception as e:
+        print(f"Error loading or processing input CSV: {type(e).__name__} - {e}")
+        return None
+
+# --- Chunk 2 (Modified): Local Daily Weather Data Fetching and Cleaning ---
+def load_and_clean_local_daily_weather(
+    fips_codes_to_filter: List[str],
+    base_data_path: str,
+    start_year_to_scan: int,
+    end_year_to_scan: int
+) -> Tuple[Optional[pl.DataFrame], List[Dict[str, str]]]:
+    """
+    Scans local Parquet files within year folders for a range of years,
+    filters for specified FIPS codes, and performs initial cleaning.
+    This function relies on config.TARGET_DAILY_WEATHER_VARIABLES to include 'tmax' and 'prcp'.
+    """
+    print(f"\nScanning local daily weather for FIPS list (count: {len(fips_codes_to_filter)}), Years: {start_year_to_scan}-{end_year_to_scan}")
+    
+    all_parquet_files = []
+    file_scan_errors: List[Dict[str, str]] = []
+
+    for year_val in range(start_year_to_scan, end_year_to_scan + 1):
+        year_folder = os.path.join(base_data_path, str(year_val))
+        if os.path.isdir(year_folder):
+            for root, _, files in os.walk(year_folder):
+                for file in files:
+                    if file.endswith(".parquet"):
+                        all_parquet_files.append(os.path.join(root, file))
+        else:
+            # Log if year folder is not found, will result in NaN for that year's weather data
+            # print(f"  Warning: Year folder not found: {year_folder}") 
+            for month_num in range(1,13): # Log this for each month for consistency if needed downstream
+                yyyymm_str = f"{year_val}{month_num:02d}" 
+                file_scan_errors.append({
+                    'yyyymm': yyyymm_str, 'file_path': year_folder, 
+                    'error_type': 'YearFolderNotFound', 'error_message': f"Year folder {year_folder} not found."
+                })
+
+    if not all_parquet_files:
+        print(f"  No Parquet files found in local directories for years {start_year_to_scan}-{end_year_to_scan}.")
+        return None, file_scan_errors
+    
+    try:
+        # Scan all found files and filter by FIPS codes in one go
+        df_daily_weather = pl.scan_parquet(all_parquet_files).filter(
+            pl.col("fips").is_in(fips_codes_to_filter)
+        ).collect()
+        
+        if df_daily_weather.height == 0:
+            # print(f"  No data found for the FIPS list in the scanned files.") # Verbose
+            return None, file_scan_errors # No data for these FIPS in these years
+
+    except Exception as e:
+        print(f"  Error during pl.scan_parquet or initial filter for FIPS list {fips_codes_to_filter}: {type(e).__name__} - {e}")
+        file_scan_errors.append({
+            'yyyymm': 'BATCH_READ_ERROR', 'file_path': 'Multiple local files',
+            'error_type': type(e).__name__, 'error_message': str(e)
+        })
+        return None, file_scan_errors
+
+    # --- Data Cleaning and Type Casting ---
+    if "date" not in df_daily_weather.columns:
+        print(f"  Error: 'date' column missing in combined weather data. Cannot proceed with this batch.")
+        file_scan_errors.append({'yyyymm': 'MISSING_DATE_COLUMN', 'file_path': 'Aggregated State Batch', 'error_type': 'SchemaError', 'error_message': "'date' column missing"})
+        return None, file_scan_errors 
+
+    if df_daily_weather["date"].dtype != pl.Datetime:
+        try:
+            df_daily_weather = df_daily_weather.with_columns(pl.col("date").cast(pl.Datetime))
+        except Exception as e:
+            print(f"  Error casting 'date' column for FIPS list: {e}. Returning raw table & errors.")
+            file_scan_errors.append({'yyyymm': 'DATE_CAST_ERROR', 'file_path': 'Aggregated State Batch', 'error_type': type(e).__name__, 'error_message': f"Error casting 'date': {e}"})
+            return df_daily_weather, file_scan_errors # Return partially processed data
+    
+    cast_and_clean_expressions = []
+    # Iterate through variables defined in config (e.g., tmax, tmin, prcp, tavg)
+    for col_name in config.TARGET_DAILY_WEATHER_VARIABLES:
+        if col_name in df_daily_weather.columns:
+            # Standardize missing values and ensure numeric types are Float64
+            if df_daily_weather[col_name].dtype == pl.String:
+                cast_and_clean_expressions.append(
+                    pl.when(pl.col(col_name).str.strip_chars().cast(pl.Float64, strict=False) == config.RAW_DATA_MISSING_VALUE_PLACEHOLDER)
+                    .then(None).otherwise(pl.col(col_name).str.strip_chars().cast(pl.Float64, strict=False)).alias(col_name)
+                )
+            elif df_daily_weather[col_name].dtype == pl.Float64: # Already float, just check for placeholder
+                cast_and_clean_expressions.append(
+                    pl.when(pl.col(col_name) == config.RAW_DATA_MISSING_VALUE_PLACEHOLDER)
+                    .then(None).otherwise(pl.col(col_name)).alias(col_name)
+                )
+            elif df_daily_weather[col_name].dtype.is_numeric(): # Other numeric types (int, etc.)
+                 cast_and_clean_expressions.append(
+                    pl.when(pl.col(col_name).cast(pl.Float64, strict=False) == config.RAW_DATA_MISSING_VALUE_PLACEHOLDER)
+                    .then(None).otherwise(pl.col(col_name).cast(pl.Float64, strict=False)).alias(col_name)
+                )
+            # Non-numeric, non-string columns that are not targeted for float conversion are ignored here
+            
+    if cast_and_clean_expressions:
+        try:
+            df_daily_weather = df_daily_weather.with_columns(cast_and_clean_expressions)
+        except Exception as e:
+            print(f"  Error applying casting/cleaning for FIPS list: {e}. Returning raw table & errors.")
+            file_scan_errors.append({'yyyymm': 'CAST_CLEAN_ERROR', 'file_path': 'Aggregated State Batch', 'error_type': type(e).__name__, 'error_message': f"Error in casting/cleaning: {e}"})
+            return df_daily_weather, file_scan_errors
+            
+    # --- Select Final Columns ---
+    final_columns_to_keep = ["date", "fips"] 
+    if "state_name" in df_daily_weather.columns: # Optional column
+        final_columns_to_keep.append("state_name")
+    
+    processed_weather_vars_as_float = []
+    for var_name in config.TARGET_DAILY_WEATHER_VARIABLES: 
+        if var_name in df_daily_weather.columns:
+            if df_daily_weather[var_name].dtype == pl.Float64: # Only keep successfully processed float vars
+                if var_name not in final_columns_to_keep: final_columns_to_keep.append(var_name)
+                processed_weather_vars_as_float.append(var_name)
+            # elif var_name in df_daily_weather.columns : # If it exists but not float, it won't be used for aggs
+                # print(f"  Info: Column '{var_name}' exists but is not Float64 after processing ({df_daily_weather[var_name].dtype}). It will not be aggregated if numeric aggs are expected.")
+
+
+    # Ensure 'tmax' and 'prcp' are available if they were in TARGET_DAILY_WEATHER_VARIABLES
+    # if "tmax" not in processed_weather_vars_as_float and "tmax" in config.TARGET_DAILY_WEATHER_VARIABLES: 
+    #     print(f"  Warning: 'tmax' was targeted but is not available as Float64 after cleaning for FIPS list.")
+    # if "prcp" not in processed_weather_vars_as_float and "prcp" in config.TARGET_DAILY_WEATHER_VARIABLES:
+    #     print(f"  Warning: 'prcp' was targeted but is not available as Float64 after cleaning for FIPS list.")
+
+
+    final_columns_to_keep = list(dict.fromkeys(final_columns_to_keep)) # Remove duplicates, preserve order
+    
+    actual_cols_in_df = [col for col in final_columns_to_keep if col in df_daily_weather.columns]
+    if not actual_cols_in_df or "date" not in actual_cols_in_df or "fips" not in actual_cols_in_df :
+        print(f"  Error: Essential columns ('date', 'fips') or any target weather variables are missing after processing for FIPS list. Available: {df_daily_weather.columns}")
+        file_scan_errors.append({'yyyymm': 'ESSENTIAL_COL_MISSING', 'file_path': 'Aggregated State Batch', 'error_type': 'SchemaError', 'error_message': 'Essential columns or weather variables missing post-processing'})
+        return None, file_scan_errors
+
+    df_daily_weather = df_daily_weather.select(actual_cols_in_df)
+    # print(f"  Cleaned daily weather data for FIPS list has shape: {df_daily_weather.shape} with columns: {df_daily_weather.columns}") # Verbose
+    return df_daily_weather, file_scan_errors
+
+
+# --- Chunk 3: Monthly Weather Aggregation ---
+def aggregate_weather_to_monthly_yearly(daily_df_for_year_fips: Optional[pl.DataFrame], year: int, fips_code: str) -> Dict[str, Any]:
+    """
+    Aggregates daily weather data to monthly averages for tmax and monthly totals for prcp for a given FIPS and year.
+    """
+    monthly_aggs_dict: Dict[str, Any] = {"fips_full": fips_code, "year": year}
+
+    # Initialize all monthly columns with NaN
+    for month_abbr in MONTH_ABBREVIATIONS:
+        monthly_aggs_dict[f"tmax_avg_{month_abbr}"] = np.nan
+        monthly_aggs_dict[f"prcp_tot_{month_abbr}"] = np.nan
+
+    if daily_df_for_year_fips is None or daily_df_for_year_fips.height == 0:
+        return monthly_aggs_dict
+
+    # Ensure 'date' column is present and is datetime
+    if "date" not in daily_df_for_year_fips.columns or daily_df_for_year_fips["date"].dtype != pl.Datetime:
+        # This should ideally be caught earlier, but as a safeguard:
+        # print(f"Warning: 'date' column missing or not datetime for FIPS {fips_code}, Year {year}. Skipping monthly aggregation.")
+        return monthly_aggs_dict
+        
+    # Check if 'tmax' and 'prcp' columns exist and are of the correct type (Float64)
+    has_tmax = "tmax" in daily_df_for_year_fips.columns and daily_df_for_year_fips["tmax"].dtype == pl.Float64
+    has_prcp = "prcp" in daily_df_for_year_fips.columns and daily_df_for_year_fips["prcp"].dtype == pl.Float64
+
+    if not has_tmax and not has_prcp:
+        # No relevant columns to aggregate
+        # print(f"Info: Neither 'tmax' nor 'prcp' (as Float64) available for FIPS {fips_code}, Year {year} for aggregation.")
+        return monthly_aggs_dict
+
+    # Add month column
+    df_with_month = daily_df_for_year_fips.with_columns(
+        pl.col("date").dt.month().alias("month_num")
+    )
+
+    # Define aggregation expressions conditionally
+    agg_expressions = []
+    if has_tmax:
+        agg_expressions.append(pl.mean("tmax").alias("monthly_tmax_avg"))
+    else: # If tmax is not available or not float, ensure the column exists in results with nulls
+        agg_expressions.append(pl.lit(np.nan, dtype=pl.Float64).alias("monthly_tmax_avg"))
+        
+    if has_prcp:
+        agg_expressions.append(pl.sum("prcp").alias("monthly_prcp_tot"))
+    else: # If prcp is not available or not float
+        agg_expressions.append(pl.lit(np.nan, dtype=pl.Float64).alias("monthly_prcp_tot"))
+
+    try:
+        # Perform aggregation
+        grouped_by_month = df_with_month.group_by("month_num").agg(agg_expressions).sort("month_num")
+
+        # Populate the dictionary with aggregated values
+        for row in grouped_by_month.iter_rows(named=True):
+            month_idx = row["month_num"] - 1 # month_num is 1-12, list index is 0-11
+            if 0 <= month_idx < 12: # Ensure month_num is valid
+                month_abbr = MONTH_ABBREVIATIONS[month_idx]
+                
+                # "monthly_tmax_avg" will exist due to pl.lit(np.nan) if has_tmax was false
+                monthly_aggs_dict[f"tmax_avg_{month_abbr}"] = row["monthly_tmax_avg"]
+                # "monthly_prcp_tot" will exist due to pl.lit(np.nan) if has_prcp was false
+                monthly_aggs_dict[f"prcp_tot_{month_abbr}"] = row["monthly_prcp_tot"]
+            # else: print(f"Warning: Invalid month number {row['month_num']} encountered for FIPS {fips_code}, Year {year}.")
+
+    except Exception as e:
+        print(f"Error during monthly aggregation for FIPS {fips_code}, Year {year}: {e}")
+        # If an error occurs, the dictionary will retain NaNs for this FIPS/year's monthly values
+            
+    return monthly_aggs_dict
+
+# --- Main Processing Function ---
+def main():
+    overall_start_time = time.time()
+    print("--- Starting Agricultural Weather Data Processing (Local Parquet - Monthly Aggregates) ---")
+    print(f"Target daily weather variables from config used for loading: {config.TARGET_DAILY_WEATHER_VARIABLES}")
+    print(f"Aggregating: Monthly TMAX_AVG and PRCP_TOT for months: {', '.join(MONTH_ABBREVIATIONS)}")
+    print(f"Weather data processing will scan from year: {config.DATA_START_YEAR}")
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    print(f"Script directory: {script_dir}")
+
+
+    ## ----- GET THE DATA ------
+
+    path_df = "../_noaa_climdiv_local/"
+    input_csv_filename = "df_yield_climdiv.csv" 
+    input_csv_path = os.path.join(path_df, input_csv_filename)
+    
+    output_csv_filename = "df_compare_months_local_WRONGGDD.csv" 
+    output_csv_path = os.path.join(script_dir, output_csv_filename)
+    
+       ## ---- START THE MAIN ----
+    
+    prepared_data = load_and_prepare_yield_data(input_csv_path)
+    if prepared_data is None:
+        print("Failed to load and prepare yield data. Exiting.")
+        return
+    df_yield, unique_fips_to_process, min_year_csv, max_year_csv = prepared_data
+    
+    # Assuming local weather data year folders are in the same directory as the script
+    local_data_base_path = script_dir 
+    
+    scan_start_year = config.DATA_START_YEAR # Use data start year from config
+    scan_end_year = max_year_csv # Scan up to the max year present in the input CSV
+    print(f"Scanning local Parquet files in year folders from {scan_start_year} to {scan_end_year} (base path: {local_data_base_path}).")
+
+    all_monthly_weather_aggregates: List[Dict[str, Any]] = []
+    all_local_file_load_errors: Dict[str, List[Dict[str,str]]] = defaultdict(list) # Store errors per FIPS
+
+    # Template for NaN aggregates for a FIPS/year if no data
+    nan_aggs_template: Dict[str, Any] = {}
+    for m_abbr in MONTH_ABBREVIATIONS:
+        nan_aggs_template[f"tmax_avg_{m_abbr}"] = np.nan
+        nan_aggs_template[f"prcp_tot_{m_abbr}"] = np.nan
+
+    # Group FIPS by state prefix for batch processing of weather files
+    fips_by_state = defaultdict(list)
+    for fips in unique_fips_to_process:
+        state_fips_prefix = fips[:2] # Assuming FIPS are strings like "SSCCC"
+        fips_by_state[state_fips_prefix].append(fips)
+    
+    num_states = len(fips_by_state)
+    print(f"\n--- Starting Main Processing Loop for {num_states} state groups ---")
+
+    for state_idx, (state_fips_prefix, fips_in_state_list) in enumerate(fips_by_state.items()):
+        state_start_time = time.time()
+        print(f"\nProcessing State Group {state_idx+1}/{num_states} (State FIPS Prefix: {state_fips_prefix}, {len(fips_in_state_list)} counties)")
+
+        # Load and clean daily weather data for all FIPS in this state group for the entire year range
+        cleaned_df_for_state_batch, errors_for_this_state_load = load_and_clean_local_daily_weather(
+            fips_codes_to_filter=fips_in_state_list, 
+            base_data_path=local_data_base_path, 
+            start_year_to_scan=scan_start_year, 
+            end_year_to_scan=scan_end_year 
+        )
+
+        if errors_for_this_state_load: 
+            print(f"  Local File Loading/Scanning Errors for state batch (FIPS prefix {state_fips_prefix}):")
+            # Log these errors associated with the FIPS codes they were intended for
+            for fips_in_batch_for_error_log in fips_in_state_list:
+                 all_local_file_load_errors[fips_in_batch_for_error_log].extend(errors_for_this_state_load)
+            for error_info in errors_for_this_state_load[:3]: # Show a few examples
+                print(f"    - File/Path {error_info.get('file_path', 'N/A')[-40:]}: {error_info['error_type']} - {error_info['error_message'][:100]}...")
+            if len(errors_for_this_state_load) > 3:
+                print(f"    ... and {len(errors_for_this_state_load) - 3} more loading errors for this state batch.")
+        
+        if cleaned_df_for_state_batch is None or cleaned_df_for_state_batch.height == 0:
+            print(f"  No cleaned daily weather data available for any FIPS in state group {state_fips_prefix} from scanned years. Aggregates will be NaN for these years.")
+            # For each FIPS in this batch, for each relevant year, add NaN aggregates
+            for fips_code_in_batch in fips_in_state_list:
+                df_fips_yield_years = df_yield.filter(pl.col("fips_full") == fips_code_in_batch)
+                all_yield_years_for_fips = sorted(df_fips_yield_years.select("year").unique().to_series().to_list())
+                for year_val in all_yield_years_for_fips:
+                    if year_val >= scan_start_year: # Only fill NaNs for years we attempted to scan data for
+                        nan_aggs_record = {"fips_full": fips_code_in_batch, "year": year_val, **nan_aggs_template}
+                        all_monthly_weather_aggregates.append(nan_aggs_record)
+        else:
+            # Add 'year_daily' column for easier filtering per year later
+            cleaned_df_for_state_batch = cleaned_df_for_state_batch.with_columns(
+                pl.col("date").dt.year().alias("year_daily") 
+            )
+            # Process each FIPS code within the loaded state batch
+            for fips_code in fips_in_state_list:
+                # Filter the batch data for the current single FIPS
+                df_single_fips_daily_data = cleaned_df_for_state_batch.filter(pl.col("fips") == fips_code)
+                
+                # Get all years for this FIPS from the original yield data
+                df_fips_yield_years = df_yield.filter(pl.col("fips_full") == fips_code)
+                relevant_yield_years_for_fips = sorted(
+                    df_fips_yield_years.filter(pl.col("year") >= scan_start_year) 
+                                       .select("year").unique().to_series().to_list()
+                )
+                
+                if df_single_fips_daily_data.height == 0 and relevant_yield_years_for_fips:
+                    # No daily data found for this specific FIPS in the (potentially non-empty) state batch
+                    # This can happen if the FIPS had no files, or files had no data for it.
+                    for year_to_aggregate in relevant_yield_years_for_fips:
+                        nan_aggs_record = {"fips_full": fips_code, "year": year_to_aggregate, **nan_aggs_template}
+                        all_monthly_weather_aggregates.append(nan_aggs_record)
+                elif relevant_yield_years_for_fips:
+                    # Daily data *might* exist for this FIPS; process each relevant year from yield CSV
+                    for year_to_aggregate in relevant_yield_years_for_fips:
+                        # Filter the single FIPS data for the specific year
+                        daily_data_for_this_year_fips = df_single_fips_daily_data.filter(pl.col("year_daily") == year_to_aggregate)
+                        
+                        if daily_data_for_this_year_fips.height == 0:
+                            # No daily data for this specific FIPS-Year combination
+                            monthly_aggs_record = {"fips_full": fips_code, "year": year_to_aggregate, **nan_aggs_template}
+                        else:
+                            # Aggregate data for this FIPS-Year
+                            monthly_aggs_record = aggregate_weather_to_monthly_yearly(daily_data_for_this_year_fips, year_to_aggregate, fips_code)
+                        all_monthly_weather_aggregates.append(monthly_aggs_record)
+                
+        # After processing scannable years for all FIPS in the state,
+        # handle years in yield data that are *before* scan_start_year for these FIPS.
+        # These years definitely won't have weather data from the scan, so fill with NaNs.
+        for fips_code_in_state_list_for_nan_fill in fips_in_state_list: # Iterate fips again for pre-data years
+            df_fips_yield_years_for_nan = df_yield.filter(pl.col("fips_full") == fips_code_in_state_list_for_nan_fill)
+            pre_data_yield_years = sorted(
+                df_fips_yield_years_for_nan.filter(pl.col("year") < scan_start_year) 
+                                   .select("year").unique().to_series().to_list()
+            )
+            for year_to_fill_nan in pre_data_yield_years:
+                nan_aggs_record = {"fips_full": fips_code_in_state_list_for_nan_fill, "year": year_to_fill_nan, **nan_aggs_template}
+                all_monthly_weather_aggregates.append(nan_aggs_record)
+        
+        state_end_time = time.time()
+        print(f"  Finished processing state group (FIPS prefix {state_fips_prefix}) in {state_end_time - state_start_time:.2f} seconds.")
+
+    # --- Chunk 6: Merge results and save ---
+    if not all_monthly_weather_aggregates:
+        print("\nNo monthly weather aggregates were generated. Cannot merge or save.")
+    else:
+        # Define the schema for the aggregated weather DataFrame
+        aggs_schema: Dict[str, pl.DataType] = {"fips_full": pl.String, "year": pl.Int64}
+        for m_abbr in MONTH_ABBREVIATIONS:
+            aggs_schema[f"tmax_avg_{m_abbr}"] = pl.Float64
+            aggs_schema[f"prcp_tot_{m_abbr}"] = pl.Float64
+        
+        try:
+            df_final_weather_aggs = pl.DataFrame(all_monthly_weather_aggregates, schema=aggs_schema)
+            print(f"\n--- Processing Complete: Total monthly aggregate records generated: {df_final_weather_aggs.height} ---")
+            # print("Sample of aggregated weather data (first 5 rows):")
+            # print(df_final_weather_aggs.head(5))
+            
+            print("\n--- Merging weather aggregates with yield data ---")
+            # Ensure join keys are correct type in df_yield (should be by load_and_prepare but double check)
+            if "fips_full" not in df_yield.columns or df_yield["fips_full"].dtype != pl.String:
+                 df_yield = df_yield.with_columns(
+                     (pl.col("state").cast(pl.String) + pl.col("county").cast(pl.String).str.zfill(3)).alias("fips_full")
+                )
+            if df_yield["year"].dtype != pl.Int64:
+                 df_yield = df_yield.with_columns(pl.col("year").cast(pl.Int64))
+            
+            df_merged = df_yield.join(
+                df_final_weather_aggs,
+                on=["fips_full", "year"], # Join keys
+                how="left" # Keep all rows from df_yield, add weather data where available
+            )
+            print(f"\nShape of merged DataFrame: {df_merged.shape}")
+            # print("Sample of merged DataFrame (first 5 rows with new columns):")
+            # cols_to_show = ["year", "fips_full"] + [col for col in df_final_weather_aggs.columns if col not in ["fips_full", "year"]]
+            # cols_to_show = [col for col in cols_to_show if col in df_merged.columns] 
+            # if cols_to_show: print(df_merged.head(5).select(cols_to_show))
+
+            print(f"\nSaving merged data to: {output_csv_path}")
+            df_merged.write_csv(output_csv_path)
+            print(f"Successfully saved data to {output_csv_path}")
+
+        except Exception as e:
+            print(f"Error during final DataFrame creation, merge, or save: {e}")
+            if 'df_final_weather_aggs' in locals() and df_final_weather_aggs.height > 0:
+                 print("Attempting to save intermediate aggregated weather data before error...")
+                 try:
+                     interim_path = os.path.join(script_dir, "intermediate_monthly_weather_aggs.csv")
+                     df_final_weather_aggs.write_csv(interim_path)
+                     print(f"Saved intermediate aggregated weather data to {interim_path}")
+                 except Exception as ie:
+                     print(f"Could not save intermediate data: {ie}")
+
+
+    if any(all_local_file_load_errors.values()): 
+        print("\n--- Summary of Local File Loading/Scanning Errors Encountered ---")
+        # Consolidate errors for reporting to avoid excessive duplicate messages
+        unique_error_messages = defaultdict(list) # Key: (file_path, error_type, error_message_snippet), Value: list of FIPS groups affected
+        for fips_key, errors_list_for_fips in all_local_file_load_errors.items():
+            for err_item in errors_list_for_fips:
+                err_signature = (
+                    err_item.get('file_path', 'N/A'), 
+                    err_item.get('error_type', 'UnknownError'),
+                    str(err_item.get('error_message', 'N/A'))[:100] # Snippet of message
+                )
+                if fips_key not in unique_error_messages[err_signature]: # Add FIPS if not already listed for this exact error
+                    unique_error_messages[err_signature].append(fips_key)
+        
+        for (path, etype, emsg), fips_groups_affected in unique_error_messages.items():
+            print(f"  Error Type: {etype}, Path/File: {path[-60:]}, Message: {emsg}...")
+            print(f"    Affected FIPS (first few state groups shown): {list(set(f[:2] for f in fips_groups_affected))[:5]} (Total FIPS count where this was logged: {len(fips_groups_affected)})")
+    else:
+        print("\nNo local file loading/scanning errors were reported across all FIPS processing.")
+
+    overall_end_time = time.time()
+    print(f"\n--- Agricultural Weather Data Processing (Monthly - Local Files) Finished in {overall_end_time - overall_start_time:.2f} seconds ---")
+
+if __name__ == "__main__":
+    main()

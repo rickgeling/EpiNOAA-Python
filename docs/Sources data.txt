@@ -1,0 +1,28 @@
+https://www.nass.usda.gov/Statistics_by_State/Minnesota/index.php
+
+
+Crop yield data states & counties USA:
+https://quickstats.nass.usda.gov/#9E7D3C2D-2F30-37D7-85A5-34C1D25355B0
+
+
+Temp & precip data for all counties:
+https://www.ncei.noaa.gov/pub/data/cirs/climdiv/
+
+
+Temp & precip data for states:
+https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/statewide/time-series/1/tmax/1/2/1895-2025
+
+
+Crop yield data for all countries:
+https://apps.fas.usda.gov/psdonline/app/index.html#/app/advQuery
+
+
+Chinese yield data:
+https://data.stats.gov.cn/english/easyquery.htm?cn=C01
+
+
+Brazil yield data:
+https://www.conab.gov.br/info-agro/safras/serie-historica-das-safras/itemlist/category/910-Milho
+
+PRISM (daily from 1981 onwards):
+https://prism.oregonstate.edu/explorer/bulk.php
