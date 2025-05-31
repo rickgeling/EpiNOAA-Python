@@ -10,11 +10,9 @@ import sys
 path_local = "../_noaa_nclimgrid_local/"
 path_importer = "../_noaa_nclimgrid_importer/"
 
-
-
-filename_local = "df_yield_with_local_weather_aggs.csv"
+filename_local = "df_final_local.csv"
 LOCAL_CSV_PATH = os.path.join(path_local, filename_local)
-filename_importer = "df_yield_with_weather_aggs_state_batched_v3.csv" # The one from S3 processing
+filename_importer = "df_final_importer.csv" # The one from S3 processing
 S3_CSV_PATH = os.path.join(path_importer, filename_importer)
 
 # Key columns for joining and identifying rows
