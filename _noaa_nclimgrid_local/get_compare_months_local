@@ -285,7 +285,7 @@ def main():
     input_csv_filename = "df_yield_climdiv.csv" 
     input_csv_path = os.path.join(path_df, input_csv_filename)
     
-    output_csv_filename = "df_compare_months_local_WRONGGDD.csv" 
+    output_csv_filename = "df_compare_months_local.csv" 
     output_csv_path = os.path.join(script_dir, output_csv_filename)
     
        ## ---- START THE MAIN ----
