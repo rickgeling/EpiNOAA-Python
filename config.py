@@ -41,3 +41,20 @@ TARGET_DAILY_WEATHER_VARIABLES = ["tmin", "tmax", "tavg", "prcp"]
 # --- Other Settings ---
 # First year for which NClimGrid data is available and should be processed
 DATA_START_YEAR = 1951
+
+# --- Tempearture Binning:
+# The range of temperature bins to create for the exposure calculation.
+# For example, from -10°C to 40°C.
+TEMP_BINS_MIN = -10
+TEMP_BINS_MAX = 40
+
+# The time resolution in minutes for the daily temperature interpolation.
+# 60 minutes = hourly temperature.
+# 15 or 30 minutes provides higher resolution but is more computationally intensive.
+TEMP_BINS_INTERVAL_MINUTES = 60
+
+
+#################################################### ADDED FOR PAPER:
+DRY_DAY_THRESHOLDS_MM = [1.0, 2.0]       # For Consecutive Dry Days (CDD)
+HEAVY_RAIN_THRESHOLDS_MM = [10.0, 20.0]  # For counting heavy rain days (R-metrics)
+####################################################
