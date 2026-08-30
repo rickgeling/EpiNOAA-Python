@@ -26,3 +26,8 @@ https://www.conab.gov.br/info-agro/safras/serie-historica-das-safras/itemlist/ca
 
 PRISM (daily from 1981 onwards):
 https://prism.oregonstate.edu/explorer/bulk.php
+
+
+Census Gazetteer files (county centroid lat/long, used for the 100th
+meridian east/west filter):
+https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.html

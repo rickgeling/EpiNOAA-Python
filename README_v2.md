@@ -44,7 +44,7 @@ dataframe.
 **Config cell** (right after "Load Libraries and packages"):
 
 ```python
-file_name = "082026_corn_yield_all_states.csv"  # file to get from extracted_usda_corn_data/
+file_name = "082026_corn_yield_paper_states.csv"  # file to get from extracted_usda_corn_data/
 save_name = "df_corn_yield_2026.csv"            # name to save new df under in created_dfs_step1
 ```
 
@@ -61,12 +61,16 @@ and `082026_soy_yield_all_states.csv`)
    check for and report counties with missing county-years.
 4. Saves the result to `created_dfs_step1/<save_name>`.
 
-**Current active files:** corn reads `082026_corn_yield_all_states.csv` →
-writes `df_corn_yield_2026.csv`; soy reads `082026_soy_yield_all_states.csv`
+**Current active files:** corn reads `082026_corn_yield_paper_states.csv` →
+writes `df_corn_yield_2026.csv`; soy reads `082026_soy_yield_paper_states.csv`
 → writes `df_soy_yield_2026.csv`. Both extracts include the 2025 season.
+(Renamed 2026-08-25 from `..._all_states.csv` — that name became misleading
+once the 100th-meridian branch introduced a genuine all-US pull; these two
+files only ever covered the 5 corn-belt states used for the paper.)
 Older files (`df_corn_yield.csv`, `df_corn_yield_2025.csv`,
-`df_soy_yield.csv`) are leftovers from earlier runs, kept in place but not
-used by anything downstream.
+`df_soy_yield.csv`) were leftovers from earlier runs, not used by anything
+downstream — moved to `OLD/old_content_01a_yield_corn/` and
+`OLD/old_content_01b_yield_soy/` on 2026-08-25.
 
 **To run for a new yield export:** drop the new raw CSV into
 `extracted_usda_<crop>_data/`, update `file_name`/`save_name` in the config
@@ -140,7 +144,8 @@ producing a mislabeled output file.
 5. Saves the merged result to `save_file` (under `created_dfs_step2/`).
 
 **Outputs so far:** `df_yield_climdiv.csv`, `df_yield_climdiv_2025.csv`,
-`df_yield_climdiv_soy.csv` are from earlier runs. `df_yield_climdiv_soy_paper.csv`
+`df_yield_climdiv_soy.csv` were from earlier runs, moved to
+`OLD/old_content_02_climdiv/` on 2026-08-25. `df_yield_climdiv_soy_paper.csv`
 and `df_yield_climdiv_corn_paper.csv` are the current targets — the notebook
 needs to be run once per crop (flip `crop` and the commented pair between
 runs) to produce both.
@@ -163,3 +168,107 @@ Downstream stages (`03a`/`03b` weather-feature engineering, `04`
 comparison/validation) currently still point at the older
 `df_yield_climdiv*.csv` filenames from step 2 rather than the new `_paper`
 outputs — repointing them is a separate, not-yet-done step.
+
+## Running the `03b` importer scripts (`get_data_importer.py` / `get_data_importer_precip_extremes.py`)
+
+Unlike stages 1–2 (Jupyter notebooks, run interactively cell-by-cell), stage
+`03b`'s scripts are plain `.py` files run from a terminal. They need the
+project's Poetry-managed Python environment, which is where most of the
+friction is — the steps below sidestep the parts that turned out to be
+unreliable in practice.
+
+### First-time setup (once per machine)
+
+1. Install Python 3.9+ if you don't have it.
+2. Install Poetry:
+   ```powershell
+   pip install poetry
+   ```
+3. From the repo root, install the project's dependencies:
+   ```powershell
+   python -m poetry install
+   ```
+   (`python -m poetry ...` instead of bare `poetry ...` — see "Why not just
+   `poetry run`?" below for why.) This reads `pyproject.toml`/`poetry.lock`
+   and creates an isolated virtual environment with the exact package
+   versions the project expects (polars, pandas, pyarrow, s3fs, pendulum,
+   etc.) — you don't need to `pip install` any of those individually.
+
+   ⚠️ If a Poetry environment for this project already exists from earlier,
+   unmanaged work (packages installed by hand, outside Poetry), `poetry
+   install` will silently reconcile it to match `poetry.lock` — which can
+   mean *downgrading* packages that were manually upgraded later. If you hit
+   this, `poetry env list --full-path` shows every environment Poetry has
+   created for this project; `<path>\Scripts\python.exe -c "import polars;
+   print(polars.__version__)"` tells you what's actually installed in each
+   one.
+
+### Every time you want to run a script
+
+Find the environment's Python interpreter and call it directly:
+
+```powershell
+$venvPath = python -m poetry env info --path
+& "$venvPath\Scripts\python.exe" 03b_weather_nclimgrid_importer/get_data_importer.py
+```
+
+The first line asks Poetry where *your* environment lives — this path is
+machine- and user-specific (something like
+`C:\Users\<you>\AppData\Local\pypoetry\Cache\virtualenvs\nclimgrid-plotting-<hash>-py3.XX`),
+so don't hardcode anyone else's path; always rediscover it with this command.
+The second line calls that environment's `python.exe` directly on the
+script — no `poetry run`, no activation step needed.
+
+To run the other crop / the precip-extremes variant, edit the `crop = "corn"`
+line near the top of the target script first (see next section), then rerun
+the same two lines above with the other script's filename.
+
+### Why not just `poetry run get_data_importer.py`?
+
+In practice, on a machine with more than one Python version installed,
+`poetry`/`poetry run` picks whichever `python` happens to be first on PATH
+*in that specific terminal* to decide which environment to use — and creates
+a brand-new, empty one if that Python version doesn't already have one. This
+means the same `poetry run` command can behave differently across two
+terminals on the same machine (e.g. VS Code's integrated terminal vs. a
+plain PowerShell window), including silently building an empty environment
+that then fails with `ModuleNotFoundError`. Calling the environment's
+`python.exe` directly (as above) sidesteps this — there's no ambiguity about
+which environment is being used.
+
+If `poetry`/`python -m poetry` itself isn't found: this just means Poetry's
+own install location isn't on PATH (harmless — `pip install poetry` will
+tell you exactly where it put `poetry.exe` in its output, e.g. `...\Scripts
+is not on PATH`). You never need `poetry.exe` on PATH for this workflow;
+`python -m poetry ...` works as long as `python` finds the interpreter you
+used to `pip install poetry` into.
+
+### `crop` toggle in the `03b` scripts
+
+Both `get_data_importer.py` and `get_data_importer_precip_extremes.py` use a
+single variable near the top of the file:
+
+```python
+crop = "corn"  # "corn" or "soy"
+```
+
+Both the input filename (`df_yield_climdiv_{crop}_paper.csv`, from stage 2)
+and output filename are derived from this one variable via f-string, so
+there's no multi-line toggle to keep in sync (unlike the stage-2 notebook) —
+just edit `crop` and rerun.
+
+**Outputs:**
+- `get_data_importer.py` → `created_dfs_step_final/df_final_importer_{crop}_paper.csv`
+  — the base five weather metrics (GDD, KDD, TMAX_AVG, PREC, CHD). This is
+  the file downstream stages/the paper dataset expect.
+- `get_data_importer_precip_extremes.py` → `created_dfs_step_final/df_final_importer_precip_extremes_{crop}.csv`
+  — the same base five (identical values, verified AST-identical code path)
+  plus exploratory precip-extremes metrics (Rx5day, CDD_1mm/2mm, R10mm/20mm).
+  Not part of the paper dataset — run in addition to, not instead of, the
+  plain script.
+
+Both scripts also compute an SGF ("Silking to Grain-Fill", `config.py`'s
+`SGF_START_MONTH`/`SGF_END_MONTH` — July 1 to August 15) block alongside the
+GS one (`GDD_SGF`, `KDD_SGF`, `TMAX_AVG_SGF`, `PREC_SGF`, `CHD_SGF`), written
+into the same output file. **Not used in the paper** — only the GS columns
+are. Left in for now rather than removed from the scripts.

@@ -1,3 +1,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# Working session log - kept locally, not on the public remote
+x_logbook/CHANGELOG.md

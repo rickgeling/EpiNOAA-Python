@@ -32,7 +32,7 @@ import config
 
 
 #which crop to run this script for
-crop = "corn"  # "corn" or "soy"
+crop = "soy"  # "corn" or "soy"
 
 #both filenames are derived from `crop`, so they can't drift apart
 input_csv_filename = f"df_yield_climdiv_{crop}_paper.csv"

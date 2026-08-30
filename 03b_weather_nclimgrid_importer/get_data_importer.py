@@ -24,8 +24,8 @@ import config
 crop = "corn"  # "corn" or "soy"
 
 #both filenames are derived from `crop`, so they can't drift apart
-input_csv_filename = f"df_yield_climdiv_{crop}_paper.csv"
-output_csv_filename = f"df_final_importer_{crop}_paper.csv"
+input_csv_filename = 'df_yield_climdiv_corn_east100m.csv' #f"df_yield_climdiv_{crop}_paper.csv"
+output_csv_filename = 'df_final_importer_corn_east100m.csv' #f"df_final_importer_{crop}_paper.csv"
 
 
 #--- Chunks 1, 2, 3, 4 (Helper functions - unchanged from previous version) ---
