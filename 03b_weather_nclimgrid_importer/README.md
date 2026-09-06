@@ -4,9 +4,9 @@ Pulls daily weather from NOAA's nclimgrid-daily dataset on S3 and aggregates it 
 
 ## why this exists as its own thing
 
-The original version of this stage was built around a published package, [nclimgrid-importer](https://gitlab.cicsnc.org/arc-project/nclimgrid-importer), and its `load_nclimgrid_data` function. I ended up not depending on that package directly. `nclimgrid_importer.py` in this folder is my own local version of the same idea: it reads the public NODD S3 bucket with `s3fs` (anonymous access, no credentials needed) and returns the same kind of data. As far as I can tell the two do the same job, I just didn't want an external dependency for something this small.
+The original version of this stage was built around a published package, [nclimgrid-importer](https://gitlab.cicsnc.org/arc-project/nclimgrid-importer), and its `load_nclimgrid_data` function. I ended up not depending on that package direcly. `nclimgrid_importer.py` in this folder is my own local version of the same idea: it reads the public NODD S3 bucket with `s3fs` (anonymous access, no credentials needed) and returns the same kind of data. As far as I can tell the two do the same job, I just didn't want an external dependency for something this small.
 
-The raw data itself comes from [NOAA's nclimgrid-daily bucket](https://noaa-nclimgrid-daily-pds.s3.amazonaws.com/index.html#EpiNOAA/v1-0-0/csv/cen/), which only goes back to 1951 (the dataset's own start date, not a limitation I introduced). Any yield row from before 1951 will end up with real weather columns.
+The raw data itself comes from [NOAA's nclimgrid-daily bucket](https://noaa-nclimgrid-daily-pds.s3.amazonaws.com/index.html#EpiNOAA/v1-0-0/csv/cen/), which only goes back to 1951 (the dataset's own start date, not a limitation I introduced). Any yield row from before 1951 ends up with no real weather columns, they come back empty.
 
 ## setup
 
@@ -61,4 +61,4 @@ Both the input filename (`df_yield_climdiv_{crop}_paper.csv`, from stage 02) and
 - `get_data_importer.py` writes `created_dfs_step_final/df_final_importer_{crop}_paper.csv`. Five weather metrics: GDD, KDD, TMAX_AVG, PREC, CHD. This is the file the paper's dataset actually uses.
 - `get_data_importer_precip_extremes.py` writes `created_dfs_step_final/df_final_importer_precip_extremes_{crop}.csv`. Same base five (I checked the two code paths are AST-identical for those, so the values match exactly), plus exploratory precipitation-extremes metrics: Rx5day, CDD at 1mm and 2mm, R10mm, R20mm. Not part of the paper, run it in addition to the plain script, not instead of it.
 
-Both scripts also compute an SGF block ("Silking to Grain-Fill", July 1 to August 15, set in `config.py`) alongside the growing-season one: `GDD_SGF`, `KDD_SGF`, `TMAX_AVG_SGF`, `PREC_SGF`, `CHD_SGF`. It ends up in the same output file. I don't use it in the paper, only the growing-season columns. I've left it in rather than stripping it out, it costs a bit of file size and nothing else.
+Both scripts also compute an SGF block ("Silking to Grain-Fill", July 1 to August 15, set in `config.py`) alongside the growing-season one: `GDD_SGF`, `KDD_SGF`, `TMAX_AVG_SGF`, `PREC_SGF`, `CHD_SGF`. It ends up in the same output file.  I don't use it in the paper, only the growing-season columns. I've left it in rather than stripping it out, it costs a bit of file size and nothing else.

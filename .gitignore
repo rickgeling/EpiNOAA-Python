@@ -4,3 +4,6 @@ __pycache__/
 
 # Working session log - kept locally, not on the public remote
 x_logbook/CHANGELOG.md
+
+# Jupyter autosave dirs
+.ipynb_checkpoints/

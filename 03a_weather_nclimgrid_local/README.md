@@ -4,7 +4,7 @@ Not currently maintained. I'm using `03b`'s live S3 version instead, this stage 
 
 ## what it would do
 
-Same idea as `03b`, join nclimgrid daily weather onto the stage-2 yield and climdiv data, aggregated to growing-season metrics, except reading from parquet files already sitting on disk instead of fetching them from S3 at runtime.
+Same idea as `03b`, join nclimgrid dialy weather onto the stage-2 yield and climdiv data, aggregated to growing-season metrics, except reading from parquet files already sitting on disk instead of fetching them from S3 at runtime.
 
 - `get_data_local.py`: the main script, same `crop` toggle and output shape as `03b`'s `get_data_importer.py`.
 - `get_compare_months_local.py`: builds the month-level comparison file that `04_compare_validate/compare_MONTHS_climdiv_nclimgrid.ipynb` and `compare_local_vs_importer.py` are both blocked on.

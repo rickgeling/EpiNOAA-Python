@@ -13,7 +13,7 @@ urls = [
 ]
 ```
 
-Check NOAA's climdiv directory for the current `-v1.0.0-YYYYMMDD` filenames before running this, and update the URLs if a newer one exists. A stale file can quietly contain `-99.90`/`-9.99` missing-value placeholders for recent months instead of real data. This actually happened once, the `20250506` vintage was missing all of May to December 2025, and the notebook doesn't catch that on its own, it just merges in whatever numbers are there.
+Check NOAA's climdiv directory for the current `-v1.0.0-YYYYMMDD` filenames before running this, and update the URLs if a newer one exists. A stale file can quietly contain `-99.90`/`-9.99` missing-value placeholders for recent months instead of real data.  This actually happened once, the `20250506` vintage was missing all of May to December 2025, and the notebook doesn't catch that on its own, it just merges in whatever numbers are there.
 
 ## config cell
 
@@ -36,4 +36,4 @@ Three lines, all three have to agree with `crop`, there's a safety check right b
 5. Merges yield and weather on state, county, year, outer join, so a county-year with weather but no yield (or the reverse) still shows up rather than getting silently dropped.
 6. Saves to `created_dfs_step2/`.
 
-One known non-issue: Illinois county 199 has division 08 in the yield data and 09 in the climdiv data. Checked, it's been that way in the source data from the start, not something introduced by this notebook.
+One known non-issue: Illinois county 199 has division 08 in the yield data and 09 in the climdiv data. Checked, its been that way in the source data from the start, not something introduced by this notebook.

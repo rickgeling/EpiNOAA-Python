@@ -106,6 +106,8 @@ def fetch_and_clean_daily_weather_batched(
             print(f"  Error casting 'date' column for FIPS batch: {e}. Returning raw table & errors.")
             return df_daily_weather, file_load_errors 
     
+    #the raw files carry -999.99 where a value is missing, turn those into real nulls
+    #before anything downstream tries to average or sum them
     cast_and_clean_expressions = []
     for col_name in config.TARGET_DAILY_WEATHER_VARIABLES:
         if col_name in df_daily_weather.columns:
@@ -149,6 +151,7 @@ def fetch_and_clean_daily_weather_batched(
     print(f"  Cleaned daily weather data for FIPS batch has shape: {df_daily_weather.shape}")
     return df_daily_weather, file_load_errors
 
+#tavg gets capped at GDD_MAX_TEMP_C first, so days hotter than that stop adding to GDD
 def calculate_daily_gdd(tavg_series: pl.Series) -> pl.Series:
     tavg_float = tavg_series.cast(pl.Float64, strict=False) 
     capped_tavg = pl.min_horizontal(tavg_float, pl.lit(config.GDD_MAX_TEMP_C, dtype=pl.Float64))
@@ -171,6 +174,8 @@ def calculate_daily_chd(tmax_series: pl.Series, prcp_series: pl.Series) -> pl.Se
     return daily_chd
 
 def _calculate_seasonal_aggregates(df_season: pl.DataFrame, season_prefix: str) -> Dict[str, Any]:
+    #strict on purpose: one missing day anywhere in the window voids the whole
+    #seasonal figure rather than quietly returning a partial sum
     aggs: Dict[str, Any] = {}
     df_season_with_daily_calcs = df_season.clone() 
     if "tavg" in df_season_with_daily_calcs.columns and not df_season_with_daily_calcs.get_column("tavg").is_null().all():
@@ -259,6 +264,8 @@ def main():
     all_yearly_weather_aggregates: List[Dict[str, Any]] = []
     all_s3_load_errors_summary: Dict[str, List[Dict[str,str]]] = {} 
 
+    #group the counties by state so each S3 fetch covers a whole state at once,
+    #one request per county was far too slow
     fips_by_state = defaultdict(list)
     for fips in unique_fips_to_process:
         state_fips_prefix = fips[:2]
@@ -275,6 +282,8 @@ def main():
             pl.col("fips_full").is_in(fips_in_state_list)
         ).select(pl.col("year").max()).item()
         
+        #if a state's yield data ends before 1951 this deliberately lands below the start
+        #year, which the check just underneath reads as "nothing to fetch"
         current_state_fetch_start_year = overall_fetch_start_year
         current_state_fetch_end_year = max(overall_fetch_start_year -1, min(overall_fetch_end_year, max_year_for_this_state_batch))
 
@@ -363,6 +372,7 @@ def main():
                         all_yearly_weather_aggregates.append(yearly_aggs)
             for fips_code in fips_in_state_list:
                 df_fips_yield_years = df_yield.filter(pl.col("fips_full") == fips_code)
+                #nclimgrid-daily starts in 1951, so yield years before that get NaN weather
                 pre_data_yield_years = sorted(
                     df_fips_yield_years.filter(pl.col("year") < overall_fetch_start_year) 
                                         .select("year").unique().to_series().to_list()
@@ -405,6 +415,7 @@ def main():
         if df_yield["year"].dtype != pl.Int64:
              df_yield = df_yield.with_columns(pl.col("year").cast(pl.Int64))
         
+        #left join, a county-year with no weather keeps its yield row and just gets NaNs
         df_merged = df_yield.join(
             df_final_weather_aggs,
             on=["fips_full", "year"],
